@@ -3149,6 +3149,287 @@ outofinodes(char *s)
   return 0;
 }
 
+int
+cfs_set_nice(char *s)
+{
+  printf("\n");
+  // Test valid nice values: should return 0
+  int valid_nices[] = {-3, -2, -1, 0, 1, 2};
+  for (int i = 0; i < sizeof(valid_nices)/sizeof(valid_nices[0]); i++) {
+    int result = set_nice(valid_nices[i]);
+    if (result != 0) {
+      printf("set_nice(%d) failed: expected 0, got %d\n", valid_nices[i], result);
+      return 1;
+    }
+  }
+
+  // Test invalid nice values: should return 1
+  int invalid_nices[] = {-4, 3, 10, -10};
+  for (int i = 0; i < sizeof(invalid_nices)/sizeof(invalid_nices[0]); i++) {
+    int result = set_nice(invalid_nices[i]);
+    if (result != 1) {
+      printf("set_nice(%d) failed: expected 1, got %d\n", invalid_nices[i], result);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+int _measure_active_tick_cnt(int end_tick) {
+  int cur_tick;
+  int prev_tick = -1;
+  int cnt = 0;
+
+  while ((cur_tick = uptime()) < end_tick) {
+    if (cur_tick == prev_tick) continue;
+    cnt += 1;
+    prev_tick = cur_tick;
+  }
+  return cnt;
+}
+
+int _run_child_by_nices(int runticks, int num_children, int *nice_vals, int set_nice_before_fork, int *res_pids, int *res_active_ticks) {
+  printf("running CPU intensive tasks for %d ticks...\n", runticks);
+  int endtick = uptime() + runticks;
+  for(int i = 0; i < num_children; i++) {
+    if (nice_vals != 0 && set_nice_before_fork != 0) set_nice(nice_vals[i]);
+    res_pids[i] = fork();
+    if(res_pids[i] < 0) {
+      printf("cfstest: fork failed\n");
+      return 1;
+    }
+
+    if(res_pids[i] == 0) {
+      if (nice_vals != 0 && set_nice_before_fork == 0) set_nice(nice_vals[i]);
+      int cnt = _measure_active_tick_cnt(endtick);
+      exit(cnt * 10 + i);
+    }
+  }
+
+  for(int i = 0; i < num_children; i++) {
+    int retval;
+    wait(&retval);
+    res_active_ticks[retval % 10] = retval / 10;
+  }
+  return 0;
+}
+
+int _check_run_ratios(int num_children, int *pids, int *nice_vals, int *active_ticks) {
+  enum { FAIL_TH = 50, CHECK_TH = 10 };
+  int result = 0;
+  for (int i = 0; i < num_children; i++) {
+    printf("[pid: %d] nice: %d | CPU Work: %d units\n",
+        pids[i], nice_vals[i], active_ticks[i]);
+    if (i == 0) continue;
+
+    int st_idx = i - 1;
+    int en_idx = i;
+
+    if (nice_vals[en_idx] < nice_vals[st_idx]) {
+      int tmp = st_idx;
+      st_idx = en_idx;
+      en_idx = tmp;
+    }
+
+    int expected_ratio_x1000 = 1000;
+    for (int j = nice_vals[st_idx]; j < nice_vals[en_idx]; j++) {
+      expected_ratio_x1000 = expected_ratio_x1000 * 2;
+    }
+
+    if (active_ticks[en_idx] == 0) {
+      printf("Error: Div by zero (nice %d starved)\n", nice_vals[en_idx]);
+      result = 1;
+      continue;
+    }
+
+    int actual_ratio_x1000 = (active_ticks[st_idx] * 1000) / active_ticks[en_idx];
+
+    int diff = actual_ratio_x1000 - expected_ratio_x1000;
+    if (diff < 0) diff = -diff;
+    int error_percent = (diff * 100) / expected_ratio_x1000;
+
+    printf(" -> [nice %d vs %d] Expected Ratio: %d, Actual: %d (Error: %d%%)\n",
+        nice_vals[st_idx], nice_vals[en_idx],
+        expected_ratio_x1000,
+        actual_ratio_x1000,
+        error_percent
+    );
+
+    if (error_percent > FAIL_TH) {
+      result = 1;
+    } else if (error_percent > CHECK_TH) {
+      if (result != 1) result = 2;
+    }
+  }
+
+  return result;
+}
+
+int
+cfs_runtime_per_nice(char *s)
+{
+  printf("\n");
+  enum { NUM_CHILDREN = 3, RUNTIME = 20 };
+  int nice_vals[NUM_CHILDREN] = {-3, 0, 1};
+
+  int pids[NUM_CHILDREN];
+  int active_ticks[NUM_CHILDREN];
+  if (_run_child_by_nices(RUNTIME * 10, NUM_CHILDREN, nice_vals, 0, pids, active_ticks) != 0) return 1;
+  return _check_run_ratios(NUM_CHILDREN, pids, nice_vals, active_ticks);
+}
+
+int
+cfs_nice_initialize(char *s)
+{
+  printf("\n");
+  enum { NUM_CHILDREN = 3, RUNTIME = 20 };
+
+  int pids[NUM_CHILDREN];
+  int active_ticks[NUM_CHILDREN];
+  if (_run_child_by_nices(RUNTIME * 10, NUM_CHILDREN, 0, 0, pids, active_ticks) != 0) return 1;
+
+  int nice_vals[NUM_CHILDREN] = {0,};
+  return _check_run_ratios(NUM_CHILDREN, pids, nice_vals, active_ticks);
+}
+
+int
+cfs_nice_extend(char *s)
+{
+  printf("\n");
+  enum { NUM_CHILDREN = 3, RUNTIME = 20 };
+  int nice_vals[NUM_CHILDREN] = {-3, 0, 1};
+
+  int pids[NUM_CHILDREN];
+  int active_ticks[NUM_CHILDREN];
+  if (_run_child_by_nices(RUNTIME * 10, NUM_CHILDREN, nice_vals, 1, pids, active_ticks) != 0) return 1;
+  return _check_run_ratios(NUM_CHILDREN, pids, nice_vals, active_ticks);
+}
+
+int
+cfs_vruntime_extend(char *s)
+{
+  printf("\n");
+  enum { WARMUP_RUNTIME = 4, RUNTIME = 6 };
+
+  _measure_active_tick_cnt(uptime() + (WARMUP_RUNTIME * 10));
+
+  int pid;
+  if ((pid = fork()) < 0) {
+    printf("runtest: fork error\n");
+    return 1;
+  }
+  int end_tick = uptime() + (RUNTIME * 10);
+  if (pid == 0) {
+    int active_tick_cnt = _measure_active_tick_cnt(end_tick);
+    exit(active_tick_cnt);
+  }
+  int p_active_tick_cnt = _measure_active_tick_cnt(end_tick);
+  int c_active_tick_cnt;
+  wait(&c_active_tick_cnt);
+
+  int pids[2] = {getpid(), pid};
+  int active_ticks[2] = {p_active_tick_cnt, c_active_tick_cnt};
+  int nice_vals[2] = {0,};
+  return _check_run_ratios(2, pids, nice_vals, active_ticks);
+}
+
+int _record_active_ticks(int target_ticks, int *active_ticks, int start_idx) {
+  int start = uptime();
+  int idx = start_idx;
+  int cur_tick = start;
+  int prev_tick = idx > 0 ? active_ticks[idx - 1]: start;
+
+  while (((cur_tick = uptime()) - start) < target_ticks) {
+    if (cur_tick == prev_tick) continue;
+    active_ticks[idx++] = cur_tick;
+    prev_tick = cur_tick;
+  }
+  if ((cur_tick = uptime()) != prev_tick) active_ticks[idx++] = cur_tick;
+  return idx;
+}
+
+int
+cfs_wakeup(char *s)
+{
+  printf("\n");
+  int pid;
+  int fd[2];
+  pipe(fd);
+
+  int work_ticks[128];
+  for (int i = 0; i < 128; i++) work_ticks[i] = -1;
+  pid = fork();
+  if (pid == 0) {
+    close(fd[0]);
+    pause(15);
+    _record_active_ticks(30, work_ticks, 0);
+    write(fd[1], work_ticks, sizeof(work_ticks));
+    close(fd[1]);
+    exit(0);
+  }
+  close(fd[1]);
+  _record_active_ticks(50, work_ticks, 0);
+  wait(0);
+
+  int child_work_ticks[128];
+  read(fd[0], child_work_ticks, sizeof(child_work_ticks));
+  close(fd[0]);
+
+  // Logging active ticks
+  printf("Parent's work ticks: ");
+  for (int i = 0; i < 128; i++) {
+    if (work_ticks[i] == -1) break;
+    printf("%d ", work_ticks[i]);
+  }
+  printf("\n");
+
+  printf("Child's work ticks: ");
+  for (int i = 0; i < 128; i++) {
+    if (child_work_ticks[i] == -1) break;
+    printf("%d ", child_work_ticks[i]);
+  }
+  printf("\n");
+
+  // Evaluate test
+  int c_start_idx = 0;
+  int c_end_idx;
+  for (c_end_idx = c_start_idx; c_end_idx < 128; c_end_idx++) {
+    if (child_work_ticks[c_end_idx] == -1) break;
+  }
+
+  int c_start_tick = child_work_ticks[c_start_idx];
+  int c_end_tick = child_work_ticks[c_end_idx - 1];
+
+  int c_active_tick_cnt = c_end_idx - c_start_idx;
+  int p_active_tick_cnt = 0;
+  for (int i = 0; i < 128; i++) {
+      if (work_ticks[i] == -1) break;
+      if (work_ticks[i] > c_start_tick && work_ticks[i] < c_end_tick) {
+          p_active_tick_cnt++;
+      }
+  }
+
+  if (
+    (c_active_tick_cnt * 8) / 10 < p_active_tick_cnt &&
+    p_active_tick_cnt < (c_active_tick_cnt * 12) / 10
+  ) {
+      printf("parent's cpu active time: %d, child's cpu active time: %d\n",
+        p_active_tick_cnt, c_active_tick_cnt);
+      return 0;
+  } else if (
+    (c_active_tick_cnt * 5) / 10 < p_active_tick_cnt &&
+    p_active_tick_cnt < (c_active_tick_cnt * 15) / 10
+  ) {
+      printf("parent's cpu active time: %d, child's cpu active time: %d\n",
+        p_active_tick_cnt, c_active_tick_cnt);
+      return 2;
+  } else {
+      printf("parent's cpu active time: %d, child's cpu active time: %d\n",
+        p_active_tick_cnt, c_active_tick_cnt);
+      return 1;
+  }
+}
+
 struct test slowtests[] = {
   {bigdir, "bigdir"},
   {manywrites, "manywrites"},
@@ -3156,6 +3437,12 @@ struct test slowtests[] = {
   {execout, "execout"},
   {diskfull, "diskfull"},
   {outofinodes, "outofinodes"},
+  {cfs_set_nice, "cfs_set_nice"},
+  {cfs_runtime_per_nice, "cfs_runtime_per_nice"},
+  {cfs_nice_initialize, "cfs_nice_initialize"},
+  {cfs_vruntime_extend, "cfs_vruntime_extend"},
+  {cfs_nice_extend, "cfs_nice_extend"},
+  {cfs_wakeup, "cfs_wakeup"},
 
   { 0, 0},
 };
