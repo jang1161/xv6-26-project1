@@ -3,12 +3,14 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "rbtree.h"
 #include "proc.h"
 #include "defs.h"
 
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
+struct rb_tree runnables;
 
 struct proc *initproc;
 
@@ -225,8 +227,13 @@ userinit(void)
   initproc = p;
 
   p->cwd = namei("/");
+  p->nice = 0;
+  p->vruntime = 0;
+  p->rbnode.key = p->vruntime;
+  p->rbnode.data = p;
 
   p->state = RUNNABLE;
+  rb_insert(&runnables, &p->rbnode);
 
   release(&p->lock);
 }
@@ -296,10 +303,17 @@ kfork(void)
 
   acquire(&wait_lock);
   np->parent = p;
+
+  np->nice = p->nice;
+  np->vruntime = p->vruntime;
+  np->rbnode.key = np->vruntime;
+  np->rbnode.data = np;
+
   release(&wait_lock);
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  rb_insert(&runnables, &np->rbnode);
   release(&np->lock);
 
   return pid;
@@ -496,6 +510,7 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
+  rb_insert(&runnables, &p->rbnode);
   sched();
   release(&p->lock);
 }
@@ -580,6 +595,7 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+        rb_insert(&runnables, &p->rbnode);
       }
       release(&p->lock);
     }
@@ -601,6 +617,7 @@ kkill(int pid)
       if(p->state == SLEEPING){
         // Wake process from sleep().
         p->state = RUNNABLE;
+        rb_insert(&runnables, &p->rbnode);
       }
       release(&p->lock);
       return 0;
