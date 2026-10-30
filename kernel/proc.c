@@ -452,23 +452,27 @@ scheduler(void)
     intr_off();
 
     int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+    
+    struct rb_node *node = rb_first(runnables.root);
+    if (node) {
+      p = node->data;
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
-      }
+      acquire(&p->lock);
+
+      p->state = RUNNING;
+      rb_delete(&runnables, node);
+      p->vruntime += 1 << (p->nice + 3);
+      p->rbnode.key = p->vruntime;
+
+      c->proc = p;
+      swtch(&c->context, &p->context);
+
+      c->proc = 0;
+      found = 1;
+
       release(&p->lock);
     }
+
     if(found == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
