@@ -106,7 +106,7 @@ struct proc {
   char name[16];               // Process name (debugging)
 
   // CFS
-  ushort nice;
-  uint64 vruntime;
+  int nice;
+  int vruntime;
   struct rb_node rbnode;
 };
