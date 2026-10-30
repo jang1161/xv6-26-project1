@@ -599,6 +599,27 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+
+        int runnable_min = -1, running_min = -1;
+        for (struct proc *p2 = proc; p2 < &proc[NPROC]; p2++) {
+          if (p2 == p) continue;
+          if (p2->state == RUNNABLE 
+            && (runnable_min == -1 || p2->vruntime < runnable_min))
+            runnable_min = p2->vruntime;
+          else if (p2->state == RUNNING
+            && (running_min == -1 || p2->vruntime < running_min))
+            running_min = p2->vruntime;
+        }
+
+        if (runnable_min != -1) 
+          p->vruntime = runnable_min;
+        else if (running_min != -1)
+          p->vruntime = running_min;
+        else
+          p->vruntime = 0;
+
+        p->rbnode.key = p->vruntime;
+
         rb_insert(&runnables, &p->rbnode);
       }
       release(&p->lock);
