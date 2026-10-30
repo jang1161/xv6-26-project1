@@ -107,3 +107,9 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int sys_set_nice(void) {
+  int n;
+  argint(0, &n);
+  return set_nice(n);
+}

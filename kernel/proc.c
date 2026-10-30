@@ -729,3 +729,11 @@ procdump(void)
     printf("\n");
   }
 }
+
+int set_nice(int n) {
+  if (n < -3 || n > 2) return 1;
+  
+  struct proc *p = myproc();
+  p->nice = n;
+  return 0;
+}
